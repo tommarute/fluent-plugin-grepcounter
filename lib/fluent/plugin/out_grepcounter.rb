@@ -1,7 +1,7 @@
 require 'fluent/output'
 
 # encoding: UTF-8
-class Fluent::GrepCounterOutput < Fluent::Output
+class Fluent::GrepCounterOutput < Fluent::Output # Note < = extend
   Fluent::Plugin.register_output('grepcounter', self)
 
   # To support log_level option implemented by Fluentd v0.10.43
@@ -14,9 +14,9 @@ class Fluent::GrepCounterOutput < Fluent::Output
     define_method("router") { Fluent::Engine }
   end
 
-  REGEXP_MAX_NUM = 20
+  REGEXP_MAX_NUM = 20 # Note Using uppercase variables is constants
 
-  def initialize
+  def initialize # Note constructor
     super
     require 'pathname'
   end
@@ -30,7 +30,7 @@ DESC
                :desc => 'The filtering regular expression.'
   config_param :exclude, :string, :default => nil,
                :desc => 'The excluding regular expression like grep -v.'
-  (1..REGEXP_MAX_NUM).each {|i| config_param :"regexp#{i}", :string, :default => nil }
+  (1..REGEXP_MAX_NUM).each {|i| config_param :"regexp#{i}", :string, :default => nil } # Note #{i} is formula
   (1..REGEXP_MAX_NUM).each {|i| config_param :"exclude#{i}", :string, :default => nil }
   config_param :count_interval, :time, :default => 5,
                :desc => 'The interval time to count in seconds.'
@@ -80,8 +80,10 @@ DESC
 Store internal count data into a file of the given path on shutdown, and load on statring.
 DESC
 
+  # Note Set getter / setter
   attr_accessor :counts
   attr_accessor :matches
+  attr_accessor :time_values
   attr_accessor :saved_duration
   attr_accessor :saved_at
   attr_accessor :last_checked
@@ -89,6 +91,7 @@ DESC
   def configure(conf)
     super
 
+    # Note @ = Global variables
     if @input_key
       @regexp = Regexp.compile(@regexp) if @regexp
       @exclude = Regexp.compile(@exclude) if @exclude
@@ -98,6 +101,7 @@ DESC
     (1..REGEXP_MAX_NUM).each do |i|
       next unless conf["regexp#{i}"]
       key, regexp = conf["regexp#{i}"].split(/ /, 2)
+      # Note Postfix Notation
       raise Fluent::ConfigError, "regexp#{i} does not contain 2 parameters" unless regexp
       raise Fluent::ConfigError, "regexp#{i} contains a duplicated key, #{key}" if @regexps[key]
       @regexps[key] = Regexp.compile(regexp)
@@ -124,7 +128,7 @@ DESC
     if @threshold.nil? and @less_than.nil? and @less_equal.nil? and @greater_than.nil? and @greater_equal.nil?
       @threshold = 1
     end
-    unless %w[>= <=].include?(@comparator)
+    unless %w[>= <=].include?(@comparator) # Note Include module
       raise Fluent::ConfigError, "grepcounter: comparator allows >=, <="
     end
     if @threshold
@@ -162,6 +166,7 @@ DESC
 
     @matches = {}
     @counts  = {}
+    @time_values = {}
     @mutex = Mutex.new
   end
 
@@ -180,15 +185,18 @@ DESC
 
   # Called when new line comes. This method actually does not emit
   def emit(tag, es, chain)
-    count = 0; matches = []
+    count = 0; matches = []; time_values = []
     # filter out and insert
     es.each do |time,record|
       catch(:break_loop) do
         if key = @input_key
-          value = record[key].to_s
+          value = record[key].to_s # Note to_s is cast
           throw :break_loop if @regexp and !match(@regexp, value)
           throw :break_loop if @exclude and match(@exclude, value)
+          # Note << = concat and sub
           matches << value # old style stores as an array of values
+          log.debug "out_grepcounter: [old style] Put time into time_values: #{time}"
+          time_values << time
         else
           @regexps.each do |key, regexp|
             throw :break_loop unless match(regexp, record[key].to_s)
@@ -197,6 +205,8 @@ DESC
             throw :break_loop if match(exclude, record[key].to_s)
           end
           matches << record # new style stores as an array of hashes, but how to utilize it?
+          log.debug "out_grepcounter: [new style] Put time into time_values: #{time}"
+          time_values << time
         end
         count += 1
       end
@@ -206,9 +216,11 @@ DESC
     # thread safe merge
     @counts[aggregate_key] ||= 0
     @matches[aggregate_key] ||= []
+    @time_values[aggregate_key] ||= []
     @mutex.synchronize do
       @counts[aggregate_key] += count
       @matches[aggregate_key] += matches
+      @time_values[aggregate_key] += time_values
     end
 
     chain.next
@@ -237,19 +249,23 @@ DESC
   # This method is the real one to emit
   def flush_emit(step)
     time = Fluent::Engine.now
-    flushed_counts, flushed_matches, @counts, @matches = @counts, @matches, {}, {}
+    flushed_counts, flushed_matches, flushed_times, @counts, @matches = @counts, @matches, @time_values, {}, {}
 
     case @aggregate
     when 'all'
       count = flushed_counts[:all]
       matches = flushed_matches[:all]
-      output = generate_output(count, matches)
+      time_values = flushed_times[:all]
+      log.debug "out_grepcounter: [aggregate all] Send time_values to generate_output: #{time_values}"
+      output = generate_output(count, matches, time_values)
       router.emit(@tag, time, output) if output
     when 'out_tag'
       flushed_counts.keys.each do |out_tag|
         count = flushed_counts[out_tag]
         matches = flushed_matches[out_tag]
-        output = generate_output(count, matches)
+        time_values = flushed_times[out_tag]
+        log.debug "out_grepcounter: [aggregate out_tag] Send time_values to generate_output: #{time_values}"
+        output = generate_output(count, matches, time_values)
         if output
           router.emit(out_tag, time, output)
         end
@@ -258,7 +274,9 @@ DESC
       flushed_counts.keys.each do |tag|
         count = flushed_counts[tag]
         matches = flushed_matches[tag]
-        output = generate_output(count, matches, tag)
+        time_values = flushed_times[tag]
+        log.debug "out_grepcounter: [aggregate in_tag] Send time_values to generate_output: #{time_values}"
+        output = generate_output(count, matches, time_values, tag)
         if output
           out_tag = @tag_proc.call(tag)
           router.emit(out_tag, time, output)
@@ -267,7 +285,7 @@ DESC
     end
   end
 
-  def generate_output(count, matches, tag = nil)
+  def generate_output(count, matches, time_values, tag = nil)
     return nil if count.nil?
     return nil if count == 0 # ignore 0 because standby nodes receive no message usually
     return nil if @less_than     and @less_than   <= count
@@ -281,6 +299,8 @@ DESC
     else
       # no 'message' field in the case of regexpN and excludeN
     end
+    # output['time_values'] = time_values
+    output['time_values'] = @delimiter ? matches.join(@delimiter) : time_values
     if tag
       output['input_tag'] = tag
       output['input_tag_last'] = tag.split('.').last
@@ -361,6 +381,7 @@ DESC
         Marshal.dump({
           :counts           => @counts,
           :matches          => @matches,
+          :time_values        => @time_values,
           :saved_at         => @saved_at,
           :saved_duration   => @saved_duration,
           :regexp           => @regexp,
@@ -378,7 +399,7 @@ DESC
   # @param [String] file_path
   # @param [Interger] count_interval
   def load_status(file_path, count_interval)
-    return unless (f = Pathname.new(file_path)).exist?
+    return unless (f = Pathname.new(file_path)).exist? # ? = Mark of to return boolean
     begin
       f.open('rb') do |f|
         stored = Marshal.load(f)
@@ -389,6 +410,7 @@ DESC
           if Fluent::Engine.now <= stored[:saved_at] + count_interval
             @counts = stored[:counts]
             @matches = stored[:matches]
+            @time_values = stored[:time_values]
             @saved_at = stored[:saved_at]
             @saved_duration = stored[:saved_duration]
 
