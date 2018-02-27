@@ -195,7 +195,6 @@ DESC
           throw :break_loop if @exclude and match(@exclude, value)
           # Note << = concat and sub
           matches << value # old style stores as an array of values
-          log.debug "out_grepcounter: [old style] Put time into time_values: #{time}"
           time_values << time
         else
           @regexps.each do |key, regexp|
@@ -205,7 +204,6 @@ DESC
             throw :break_loop if match(exclude, record[key].to_s)
           end
           matches << record # new style stores as an array of hashes, but how to utilize it?
-          log.debug "out_grepcounter: [new style] Put time into time_values: #{time}"
           time_values << time
         end
         count += 1
@@ -256,7 +254,6 @@ DESC
       count = flushed_counts[:all]
       matches = flushed_matches[:all]
       time_values = flushed_times[:all]
-      log.debug "out_grepcounter: [aggregate all] Send time_values to generate_output: #{time_values}"
       output = generate_output(count, matches, time_values)
       router.emit(@tag, time, output) if output
     when 'out_tag'
@@ -264,7 +261,6 @@ DESC
         count = flushed_counts[out_tag]
         matches = flushed_matches[out_tag]
         time_values = flushed_times[out_tag]
-        log.debug "out_grepcounter: [aggregate out_tag] Send time_values to generate_output: #{time_values}"
         output = generate_output(count, matches, time_values)
         if output
           router.emit(out_tag, time, output)
@@ -275,7 +271,6 @@ DESC
         count = flushed_counts[tag]
         matches = flushed_matches[tag]
         time_values = flushed_times[tag]
-        log.debug "out_grepcounter: [aggregate in_tag] Send time_values to generate_output: #{time_values}"
         output = generate_output(count, matches, time_values, tag)
         if output
           out_tag = @tag_proc.call(tag)
